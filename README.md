@@ -19,10 +19,10 @@ cd claude-recipes
 ./uninstall.sh
 ```
 
-シンボリックリンクを削除します。レビューアーティファクト（`~/.claude/reviews/`）の削除は別途:
+シンボリックリンクを削除します。レビューアーティファクト（`.claude/reviews/`）の削除は別途:
 
 ```bash
-./clean-reviews.sh
+rm -rf .claude/reviews/
 ```
 
 ## コマンド一覧
@@ -39,7 +39,6 @@ config/
     └── review-fix.md
 install.sh             # config/ → ~/.claude/ へシンボリックリンクを作成
 uninstall.sh           # シンボリックリンクの削除
-clean-reviews.sh       # レビューアーティファクト (~/.claude/reviews/) の削除
 ```
 
 ## 設定の追加
