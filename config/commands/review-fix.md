@@ -15,16 +15,23 @@ PR に対して Claude による自動レビューサイクルを回し、品質
               ▼
   ┌──── Round n ──────────────────────────────────────────────────────────────────┐
   │                                                                              │
-  │  ┌──────────────────────────┐                                                │
-  │  │ Reviewer                 │                                                │
-  │  │ review_{n}.md を出力     │                                                │
-  │  │  - Findings (指摘一覧)   │                                                │
-  │  │  - Verdict 判定          │                                                │
-  │  └────────────┬─────────────┘                                                │
-  │               │                                                              │
-  │               ▼                                                              │
+  │  ┌─── Reviewers（並列 K 名 / Task ツールで同時起動）────────────────────┐    │
+  │  │  Reviewer 1 → review_{n}_1.md                                       │    │
+  │  │  Reviewer 2 → review_{n}_2.md                                       │    │
+  │  │  …                                                                   │    │
+  │  └─────────────────────────┬────────────────────────────────────────────┘    │
+  │                            │                                                 │
+  │                            ▼                                                 │
+  │  ┌─────────────────────────────────────────────────────────────────────┐     │
+  │  │ Coordinator: 統合                                                   │     │
+  │  │  - 全 review_{n}_*.md を読み込み・重複排除・統合                    │     │
+  │  │  - Verdict 統合（最も厳しいものを採用）                             │     │
+  │  │  - Finding ID を採番し直し                                          │     │
+  │  └─────────────────────────┬───────────────────────────────────────────┘     │
+  │                            │                                                 │
+  │                            ▼                                                 │
   │  ┌─────────────────────────────────────────────────────────────────────────┐  │
-  │  │ Verdict 分岐                                                           │  │
+  │  │ 統合 Verdict 分岐                                                      │  │
   │  └──────┬──────────────────────────────┬──────────────────┬────────────────┘  │
   │         │                              │                  │                   │
   │         ▼                              ▼                  ▼                   │
@@ -65,7 +72,7 @@ PR に対して Claude による自動レビューサイクルを回し、品質
    (max 10 rounds)
 ```
 
-> **1 ラウンドの定義:** Reviewer → Coordinator → Implementer（Accept 項目がない場合は Implementer をスキップ）の 1 サイクルを 1 ラウンドと数える。
+> **1 ラウンドの定義:** Reviewers（並列 K 名）→ Coordinator（統合・精査）→ Implementer（Accept 項目がない場合は Implementer をスキップ）の 1 サイクルを 1 ラウンドと数える。
 
 ## ディレクトリ構造
 
@@ -73,34 +80,40 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 ~/.claude/reviews/          # レビューアーティファクト（リポジトリ外に配置）
   <owner>/<repo>/           # リポジトリごとに分離
     <PR番号>/               # PR ごとにディレクトリを分離（並行レビュー対応）
-      review_1.md           # 1回目のレビュー結果
-      task_1.md             # 1回目の対応タスク（Coordinator が精査）
-      review_2.md           # 2回目のレビュー結果
-      task_2.md             # 2回目の対応タスク
-      ...
+      <YYYYMMDD_HHMMSS>/   # 実行ごとにタイムスタンプディレクトリを作成（履歴保持）
+        review_1_1.md       # Round 1, Reviewer 1
+        review_1_2.md       # Round 1, Reviewer 2
+        task_1.md           # Round 1 タスク（統合済み）
+        review_2_1.md       # Round 2, Reviewer 1
+        review_2_2.md       # Round 2, Reviewer 2
+        task_2.md           # Round 2 タスク
+        ...
 ```
 
 > **Note:** レビューアーティファクトは `~/.claude/reviews/` 配下に保存され、リポジトリ内にはファイルが生成されない。そのため `.gitignore` の設定は不要であり、どのリポジトリでも追加設定なしに利用できる。`<owner>/<repo>` は git remote origin の URL から自動的に決定される。
 
 ### ナンバリング規則
 
-- PR ごとに `~/.claude/reviews/<owner>/<repo>/<PR番号>/` ディレクトリを使用する。`<owner>/<repo>` は git remote origin の URL から取得する。新しい PR のレビューサイクル開始時に **Coordinator** が該当ディレクトリをクリーンし、ナンバリングを 1 からリセットする。ディレクトリが存在しない場合は作成する。
-- 同一 PR 内では `review_1.md` → `task_1.md` → `review_2.md` → `task_2.md` … と連番で進む。
-
-> **注意:** 同一 PR に対して再度レビューサイクルを開始した場合（例: 追加コミット後に `/review-fix` を再実行）、過去のレビューアーティファクト（`review_*.md`, `task_*.md`）は **すべて削除** され、ナンバリングは 1 からリセットされる。過去のレビュー履歴は保持されない。
+- PR ごとに `~/.claude/reviews/<owner>/<repo>/<PR番号>/` ディレクトリを使用する。`<owner>/<repo>` は git remote origin の URL から取得する。
+- レビューサイクル開始時に **Coordinator** が `<YYYYMMDD_HHMMSS>` 形式のタイムスタンプディレクトリを新規作成する。過去のタイムスタンプディレクトリは削除しない（履歴として保持される）。
+- 同一タイムスタンプディレクトリ内では `review_1_1.md`, `review_1_2.md` → `task_1.md` → `review_2_1.md`, `review_2_2.md` → `task_2.md` … と連番で進む。
+- ファイル命名規則: `review_{n}_{m}.md`（n = ラウンド番号, m = レビュアー番号）、`task_{n}.md`（n = ラウンド番号）。
 
 ## 各ロールの責務
 
 ### Reviewer
 
 - PR の diff を読み、問題点・改善案を severity 付きで列挙する。
-- `review_{n}.md` に出力する。
+- `review_{n}_{m}.md` に出力する（n = ラウンド番号, m = 自身のレビュアー番号）。
 - 毎ラウンド、前ラウンドの情報を持たない状態でフレッシュにレビューする。
+- 各 Reviewer は互いの存在を知らず、独立してレビューを行う。
+- デフォルトで 2 名を並列起動する。Coordinator の判断で増減可能。
 
 ### Coordinator（メインの Claude または人間）
 
-- レビュー内容を技術的観点から精査する。
-- 各指摘に対して **Accept（対応する）** か **Reject（対応しない）** を判断し、`task_{n}.md` に出力する。
+- 全 Reviewer の `review_{n}_*.md` を読み込み、指摘を重複排除・統合する。
+- Verdict を統合する（最も厳しいものを採用: Request Changes > Comment > Approve）。
+- 統合した指摘に対して **Accept（対応する）** か **Reject（対応しない）** を判断し、`task_{n}.md` に出力する。Finding ID は Coordinator が統合時に採番し直す。
 - 過剰な指摘・スコープ外の提案・費用対効果の低い項目はフィルタリングする。
 - Reject には必ず理由を明記する。
 - Round 2 以降は、前ラウンドの修正が正しく行われたかを自身で検証する（Reviewer には前ラウンド情報を渡さない）。
@@ -108,20 +121,22 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 ### Implementer
 
 - `task_{n}.md` の Accept 項目を実装する。
-- 詳細なコンテキストが必要な場合は `review_{n}.md` および設計ドキュメントも参照する。
+- 詳細なコンテキストが必要な場合は `review_{n}_*.md` および設計ドキュメントも参照する。
 - PR ブランチに追加コミットする。
 
 ## ロールの実行モデル
 
 各ロールは **独立した Claude インスタンス** で実行する。Coordinator はメインセッション（ユーザーと会話している Claude）が担い、Reviewer と Implementer は Task ツールで別エージェント（サブエージェント）として起動する。
 
-| ロール | 実行主体 | 理由 |
-|--------|----------|------|
-| **Coordinator** | メインの Claude セッション | ユーザーとの対話・判断の主体であるため |
-| **Reviewer** | Task ツールで起動するサブエージェント | Coordinator と独立した視点でレビューするため |
-| **Implementer** | Task ツールで起動するサブエージェント | 実装作業を分離し、Coordinator のコンテキストを消費しないため |
+| ロール | 実行主体 | 並列数 | 理由 |
+|--------|----------|--------|------|
+| **Coordinator** | メインの Claude セッション | 1 | ユーザーとの対話・判断の主体であるため |
+| **Reviewer** | Task ツールで起動するサブエージェント | K（デフォルト 2） | 複数の独立した視点でレビューし、指摘の取りこぼしを防ぐため |
+| **Implementer** | Task ツールで起動するサブエージェント | 1 | 実装作業を分離し、Coordinator のコンテキストを消費しないため |
 
 > **重要:** Coordinator 自身が Reviewer や Implementer を兼任してはならない。レビューの客観性と、コンテキスト分離による品質を担保するために、必ず別エージェントとして起動すること。
+
+> **Note:** Reviewer を複数名起動する際は、Task ツールの呼び出しを **1 メッセージ内に複数含めて並列起動** すること。順次起動するとレイテンシが増大する。
 
 ## Severity レベルの定義
 
@@ -135,10 +150,10 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 
 ## ファイルフォーマット
 
-### review_{n}.md（Reviewer が出力）
+### review_{n}_{m}.md（Reviewer が出力）
 
 ```markdown
-# Review {n}: PR #{PR番号} — {タイトル}
+# Review {n}-{m}: PR #{PR番号} — {タイトル}
 
 ## Summary
 {全体の所感・1〜3 行}
@@ -194,13 +209,13 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 
 > **Note:** Accept 項目が 0 件の場合は「## 対応する (Accept)」セクションを、Reject 項目が 0 件の場合は「## 対応しない (Reject)」セクションを、それぞれ省略してよい。
 
-> **Note:** `{内容の要約}` は、Coordinator が review_n.md の指摘内容（`- **H-1**: {内容}` 形式）を短く要約して付けるタイトルである。review_n.md に「タイトル」フィールドは存在しないため、Coordinator が指摘の本質を 1 フレーズに要約すること。
+> **Note:** `{内容の要約}` は、Coordinator が各 Reviewer の `review_{n}_*.md` の指摘内容を統合・重複排除した上で短く要約して付けるタイトルである。Finding ID は Coordinator が統合時に採番し直すため、個別の `review_{n}_{m}.md` の ID とは異なる場合がある。
 
 ## 終了条件
 
 以下の **両方** を満たしたらサイクルを終了する:
 
-1. **Reviewer が Approve verdict を出す。**
+1. **統合 Verdict が Approve となる（全 Reviewer が Approve）。**
 2. **Coordinator が残指摘（もしあれば）を対応不要と判断する。**
 
 Approve が出ても Coordinator が残指摘に対応すべきと判断した場合はサイクルを継続する。この場合も Coordinator は `task_{n}.md` を作成し、Accept 項目があれば Implementer を経由する通常フローと同じ手順を踏む（フロー図の Approve/No は Request Changes / Comment の継続パスと同じ合流点に合流する）。
@@ -225,6 +240,18 @@ Reviewer は以下の規則に従って Verdict を決定すること:
 
 > **重要:** Medium 以上の指摘がある場合に Approve を出してはならない。Medium の指摘は「機能は正しいが品質・保守性に影響する」レベルであり、Coordinator が対応要否を判断する機会を確保するために、最低でも Comment とすること。
 
+### 複数 Reviewer の Verdict 統合ルール
+
+複数 Reviewer の Verdict は、**最も厳しいものを採用** するルールで統合する:
+
+| 順位 | Verdict | 意味 |
+|------|---------|------|
+| 1（最も厳しい） | **Request Changes** | 1 名でも Request Changes → 統合 Verdict は Request Changes |
+| 2 | **Comment** | Request Changes なし & 1 名以上が Comment → 統合 Verdict は Comment |
+| 3（最も緩い） | **Approve** | 全員が Approve → 統合 Verdict は Approve |
+
+> **例:** Reviewer 1 が Approve、Reviewer 2 が Comment の場合、統合 Verdict は Comment となる。Coordinator はこの統合 Verdict に基づいてフロー図の分岐に進む。
+
 ### 10 ラウンド到達時のエスカレーション
 
 レビューが 10 ラウンドに達した場合は無限ループ防止のためサイクルを強制終了し、**人間が介入して判断する**。残課題を Issue 化するなど、手動で対応方針を決定すること。
@@ -241,32 +268,39 @@ Reviewer は以下の規則に従って Verdict を決定すること:
 
 > **設計意図:** Reviewer に前ラウンドの情報を渡さないのは、アンカリングバイアスを防ぐため。前ラウンドの指摘に引きずられて「修正の検証」に偏り、新たな視点での問題発見が弱くなることを避ける。前ラウンドの修正検証は Coordinator が自身で行う。
 
+> **Note:** 複数 Reviewer には同一の入力（PR diff）を渡す。各 Reviewer は互いの存在を知らない状態で独立にレビューを行う。
+
 ### Coordinator が判断時に参照する情報
 
 Coordinator はメインセッションの Claude（またはユーザー）であり、サブエージェントとして起動されるわけではない。以下の情報はメインセッションのコンテキストとして既に保持しているか、直接参照できるものである。
 
-- `review_{n}.md`
+- 全 Reviewer の `review_{n}_*.md`
 - コードベースの知識（アーキテクチャ方針など）— メインセッションのコンテキストとして保持
 
 ### Implementer への入力
 
 - `task_{n}.md`（主たる作業指示）
-- `review_{n}.md`（詳細なコンテキスト・指摘の背景理解用）
+- `review_{n}_*.md`（詳細なコンテキスト・指摘の背景理解用）
 
 ### 実行例
 
 ユーザーが Coordinator（メインの Claude）に対してレビューワークフローの実行を指示する。Coordinator は以下のようにサブエージェントを起動してサイクルを回す。
 
 ```
-# 1. Coordinator が Reviewer サブエージェントを起動
-#    Task ツール（subagent_type: general-purpose）で別 Claude を起動し、
-#    PR diff・設計ドキュメントを渡して review_1.md を生成させる。
+# 1. Coordinator がタイムスタンプディレクトリを作成
+#    ~/.claude/reviews/<owner>/<repo>/<PR番号>/<YYYYMMDD_HHMMSS>/ を作成。
+#    過去のディレクトリは削除しない。
 
-# 2. Coordinator 自身が review_1.md を精査し、task_1.md を作成
-#    Accept / Reject の判断はメインセッションで行う。
+# 2. Coordinator が Reviewer サブエージェントを並列起動
+#    Task ツール（subagent_type: general-purpose）で K 名の Reviewer を
+#    **1 メッセージ内で同時に** 起動し、PR diff を渡して
+#    review_1_1.md, review_1_2.md を生成させる。
 
-# 3. Accept 項目がある場合、Coordinator が Implementer サブエージェントを起動
+# 3. Coordinator 自身が全 review_1_*.md を読み込み、統合・精査し task_1.md を作成
+#    指摘の重複排除・Verdict 統合・Accept / Reject の判断はメインセッションで行う。
+
+# 4. Accept 項目がある場合、Coordinator が Implementer サブエージェントを起動
 #    Task ツールで別 Claude を起動し、task_1.md の Accept 項目を実装させる。
 
-# 4. 再び Reviewer サブエージェントを起動 → 終了条件を満たすまで繰り返し
+# 5. 再び Reviewer サブエージェントを並列起動 → 終了条件を満たすまで繰り返し
 ```
