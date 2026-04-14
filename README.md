@@ -19,9 +19,10 @@ cd claude-recipes
 ./uninstall.sh
 ```
 
-シンボリックリンクを削除します。レビューアーティファクト（`.claude/reviews/`）の削除は別途:
+シンボリックリンクを削除します。レビューアーティファクトはレビュー対象の各リポジトリ内に生成されます。不要な場合は各リポジトリで個別に削除してください:
 
 ```bash
+cd /path/to/reviewed-repo
 rm -rf .claude/reviews/
 ```
 
