@@ -35,3 +35,20 @@ done < <(find "$CONFIG_DIR" -type f ! -name '.gitkeep' -print0)
 
 echo ""
 echo "  Removed $removed symlink(s)."
+
+# グローバル gitignore から .claude/reviews/ を除去
+GITIGNORE_ENTRY=".claude/reviews/"
+GLOBAL_IGNORE="$(git config --global core.excludesFile 2>/dev/null || true)"
+GLOBAL_IGNORE="${GLOBAL_IGNORE:-$HOME/.config/git/ignore}"
+
+echo ""
+echo "==> Cleaning global gitignore"
+echo "    File: $GLOBAL_IGNORE"
+
+if [[ -f "$GLOBAL_IGNORE" ]] && grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; then
+  grep -vFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE" > "$GLOBAL_IGNORE.tmp"
+  mv "$GLOBAL_IGNORE.tmp" "$GLOBAL_IGNORE"
+  echo "  REMOVE  $GITIGNORE_ENTRY"
+else
+  echo "  OK      $GITIGNORE_ENTRY (not present)"
+fi

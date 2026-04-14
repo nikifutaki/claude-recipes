@@ -80,6 +80,10 @@ mkdir -p "$(dirname "$GLOBAL_IGNORE")"
 if [[ -f "$GLOBAL_IGNORE" ]] && grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; then
   echo "  OK    $GITIGNORE_ENTRY (already present)"
 else
+  # Ensure file ends with a newline before appending
+  if [[ -f "$GLOBAL_IGNORE" ]] && [[ -s "$GLOBAL_IGNORE" ]] && [[ "$(tail -c 1 "$GLOBAL_IGNORE")" != "" ]]; then
+    echo "" >> "$GLOBAL_IGNORE"
+  fi
   echo "$GITIGNORE_ENTRY" >> "$GLOBAL_IGNORE"
   # 書き込み後の検証
   if grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; then
