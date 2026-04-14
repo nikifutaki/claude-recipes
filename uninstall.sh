@@ -40,6 +40,7 @@ echo "  Removed $removed symlink(s)."
 GITIGNORE_ENTRY=".claude/reviews/"
 GLOBAL_IGNORE="$(git config --global core.excludesFile 2>/dev/null || true)"
 GLOBAL_IGNORE="${GLOBAL_IGNORE:-$HOME/.config/git/ignore}"
+GLOBAL_IGNORE="${GLOBAL_IGNORE/#\~/$HOME}"
 
 echo ""
 echo "==> Cleaning global gitignore"
