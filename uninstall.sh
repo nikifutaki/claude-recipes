@@ -39,7 +39,7 @@ echo "  Removed $removed symlink(s)."
 # グローバル gitignore から .claude/reviews/ を除去
 GITIGNORE_ENTRY=".claude/reviews/"
 GLOBAL_IGNORE="$(git config --global core.excludesFile 2>/dev/null || true)"
-GLOBAL_IGNORE="${GLOBAL_IGNORE:-$HOME/.config/git/ignore}"
+GLOBAL_IGNORE="${GLOBAL_IGNORE:-${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore}"
 GLOBAL_IGNORE="${GLOBAL_IGNORE/#\~/$HOME}"
 
 echo ""
@@ -53,3 +53,6 @@ if [[ -f "$GLOBAL_IGNORE" ]] && grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; t
 else
   echo "  OK      $GITIGNORE_ENTRY (not present)"
 fi
+
+echo ""
+echo "==> Done!"
