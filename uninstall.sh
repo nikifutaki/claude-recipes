@@ -47,7 +47,7 @@ echo "==> Cleaning global gitignore"
 echo "    File: $GLOBAL_IGNORE"
 
 if [[ -f "$GLOBAL_IGNORE" ]] && grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; then
-  grep -vFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE" > "$GLOBAL_IGNORE.tmp"
+  grep -vFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE" > "$GLOBAL_IGNORE.tmp" || true
   mv "$GLOBAL_IGNORE.tmp" "$GLOBAL_IGNORE"
   echo "  REMOVE  $GITIGNORE_ENTRY"
 else
