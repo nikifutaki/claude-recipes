@@ -66,5 +66,34 @@ if [[ "$file_count" -eq 0 ]]; then
   echo "  No config files found in $CONFIG_DIR"
 fi
 
+# グローバル gitignore に .claude/reviews/ を追加
+GITIGNORE_ENTRY=".claude/reviews/"
+GLOBAL_IGNORE="$(git config --global core.excludesFile 2>/dev/null || true)"
+GLOBAL_IGNORE="${GLOBAL_IGNORE:-${XDG_CONFIG_HOME:-$HOME/.config}/git/ignore}"
+GLOBAL_IGNORE="${GLOBAL_IGNORE/#\~/$HOME}"
+
+echo ""
+echo "==> Configuring global gitignore"
+echo "    File: $GLOBAL_IGNORE"
+
+mkdir -p "$(dirname "$GLOBAL_IGNORE")"
+
+if [[ -f "$GLOBAL_IGNORE" ]] && grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; then
+  echo "  OK    $GITIGNORE_ENTRY (already present)"
+else
+  # Ensure file ends with a newline before appending
+  if [[ -f "$GLOBAL_IGNORE" ]] && [[ -s "$GLOBAL_IGNORE" ]] && [[ "$(tail -c 1 "$GLOBAL_IGNORE")" != "" ]]; then
+    echo "" >> "$GLOBAL_IGNORE"
+  fi
+  echo "$GITIGNORE_ENTRY" >> "$GLOBAL_IGNORE"
+  # 書き込み後の検証
+  if grep -qFx "$GITIGNORE_ENTRY" "$GLOBAL_IGNORE"; then
+    echo "  ADD   $GITIGNORE_ENTRY"
+  else
+    echo "  ERROR: Failed to add $GITIGNORE_ENTRY to $GLOBAL_IGNORE" >&2
+    exit 1
+  fi
+fi
+
 echo ""
 echo "==> Done!"
