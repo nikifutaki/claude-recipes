@@ -30,7 +30,7 @@ rm -rf .claude/reviews/
 
 | コマンド | 説明 |
 |----------|------|
-| `/review-fix [claude=N] [codex=M]` | PR に対する AI レビューワークフロー。Reviewer / Coordinator / Implementer の 3 ロールで多ラウンドレビューサイクルを回す。Reviewer は Claude（Task ツール）と codex CLI を自由に組み合わせて並列起動できる。引数なしは `claude=2 codex=0` 相当（既定 `claude=2 codex=0`、合計 0 は不可） |
+| `/review-fix [claude=N] [codex=M]` | PR に対する AI レビューワークフロー。Reviewer / Coordinator / Implementer の 3 ロールで多ラウンドレビューサイクルを回す。Reviewer は Claude（Task ツール）と codex CLI を自由に組み合わせて並列起動できる。引数なしは `claude=2 codex=0` 相当（合計 0 は不可） |
 
 ## リポジトリ構成
 
