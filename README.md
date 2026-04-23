@@ -30,7 +30,7 @@ rm -rf .claude/reviews/
 
 | コマンド | 説明 |
 |----------|------|
-| `/review-fix` | PR に対する AI レビューワークフロー。Reviewer / Coordinator / Implementer の 3 ロールで多ラウンドレビューサイクルを回す |
+| `/review-fix <PR番号>` | PR に対する AI レビューワークフロー。Reviewer / Coordinator / Implementer の 3 ロールで多ラウンドレビューサイクルを回す。**要: `/review` スキル**（Coordinator・サブエージェント両環境で利用可能であること）。**実行前に `gh pr checkout <PR番号>` で PR ブランチへ切替、同一 PR への並行実行は非サポート**。詳細な前提条件および仕様は [`config/commands/review-fix.md`](config/commands/review-fix.md) を参照 |
 
 ## リポジトリ構成
 
