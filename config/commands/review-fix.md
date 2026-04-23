@@ -14,19 +14,33 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 - `<PR番号>`: 必須。レビュー対象の PR 番号（正の整数）。
 - 非整数・負数・ゼロ・欠落は即エラーとし、サイクルを開始しない。
 - Coordinator は引数を正規表現 `^[1-9][0-9]*$` に対して検証し、マッチしない場合は即エラーとする（例: `05`, `+5`, `5 `, `5.0` はいずれも不正）。
+- 引数は **trim せず**、入力された文字列をそのまま正規表現にマッチさせる。前後の空白、全角数字、タブ等を含む入力は上記正規表現にマッチしないため不正として即エラーとする（例: `"5 "`, `" 5"`, `"５"`, `"5\t"` はいずれも不正）。
 
 ### 前提条件
 
-- 対象 PR が GitHub 上に存在し、`gh pr view <PR番号>` で参照可能であること。
-- 対象 PR が `origin` remote のブランチから作成されていること（origin-based PR）。fork から作成された PR は本スキルのサポート対象外とする（remote 名の解決が `origin` 固定のため）。Coordinator は Preflight で `gh pr view <PR番号> --json isCrossRepository -q .isCrossRepository` を実行し、結果が `true`（fork PR）の場合は明示的なエラーメッセージ（「fork PR は現状サポート外」）で即サイクルを中断する。
-- 対象 PR の state が `OPEN` であること。Coordinator は Preflight で `gh pr view <PR番号> --json state -q .state` を実行し、結果が `OPEN` 以外（`CLOSED` / `MERGED`）の場合は明示的なエラーメッセージ（「PR state が <state> のためレビュー不可。再オープン後に再実行」）で即サイクルを中断する。`gh pr view --json state` は `OPEN` / `CLOSED` / `MERGED` のみを返すため、Draft PR は state が `OPEN` として扱われ暗黙に許容される（別途 `.isDraft` フィールドを参照する必要はない）。
-- 実行環境に組み込みスキル `/review` がインストールされていること。未インストール環境では本スキルは動作しない（フォールバックは提供しない）。
-- ローカルの作業ディレクトリが対象 PR のブランチにチェックアウト済みで、最新コミットが push されていること（Reviewer は GitHub 上の PR をレビューするため）。
-- 未 push のローカル変更がある場合、Coordinator は警告してサイクルを中断する（自動 push はしない）。「未 push のローカル変更がない」状態は、以下の**すべて**を満たすこととする。チェック順序は (1) `gh pr view <PR番号> --json headRefName -q .headRefName` で PR ブランチ名 `<branch>` を取得 → (2) `git symbolic-ref --short HEAD` の出力が `<branch>` と一致することを検証（`git symbolic-ref --short HEAD` が非 0 終了した場合は「HEAD が detached 状態のため `<branch>` に `git checkout` してから再実行」の明示エラーで即中断。正常終了かつ `<branch>` と不一致の場合は「現在 <actual> にチェックアウト中。`<branch>` に切り替えてから再実行」の明示エラーで即中断） → (3) `git fetch origin <branch>` で remote-tracking ref を最新化 → (4) 以下の両方を検証、とする:
-  - `git rev-list "origin/<branch>..HEAD"` の出力が空である（コミット済みだが未 push のコミットがない）。`<branch>` は `gh pr view <PR番号> --json headRefName -q .headRefName` で取得した PR ブランチ名。`@{u}`（upstream）は参照しない — Implementer が `git push origin HEAD` 系を使うため upstream が未設定でも正常動作させるため。`rev-list` 実行前に `git fetch origin <branch>` を必須とすることで、別環境から push された後の古い `origin/<branch>` による誤判定（未 push コミットありとの不当な abort、または force-push 後の state 不整合）を防ぐ。
-  - `git status --porcelain` の出力が空である（未ステージ・ステージ済み未コミット変更がない）
+以下の条件を満たす環境で実行されること。**各条件の具体的な検証手順は Coordinator が Preflight で実行する**（詳細は後述の「各ロールの責務 → Coordinator」セクションを正本として参照 — 本セクションは条件の列挙に留める）。
 
-> **Note（中断後の復旧）:** Implementer の push 失敗等でサイクルが中断された場合、ローカルに未 push コミットが残る。次回 `/review-fix` 実行前に手動で `git push`（または `git reset --hard origin/<branch>` で破棄）して Preflight 条件を満たすこと。自動復旧は行わない。
+- **対象 PR が GitHub 上に存在し、参照可能であること。**
+- **対象 PR が `origin` remote のブランチから作成されていること（origin-based PR）。** fork から作成された PR は本スキルのサポート対象外（remote 名の解決が `origin` 固定のため）。
+- **対象 PR の state が `OPEN` であること。** Draft PR は `OPEN` として扱い許容する（後述の「設計判断: Draft PR を許容する」を参照）。
+- **実行環境に組み込みスキル `/review` がインストールされていること。** 未インストール環境では本スキルは動作しない（フォールバックは提供しない）。Coordinator が事前検知する手段はないため、未インストール時は Reviewer サブエージェント起動時の失敗として現れる（後述「部分的失敗時の振る舞い」参照）。
+- **ローカルの作業ディレクトリが対象 PR のブランチにチェックアウト済みで、未 push のローカル変更がないこと。** Reviewer は GitHub 上の PR をレビューするため、最新コミットが push されている必要がある。具体的には以下の 2 条件を**両方**満たすこと:
+    - 現在のブランチが PR ブランチと一致している（detached HEAD や別ブランチでないこと）。
+    - 未 push のローカルコミットが存在せず、未ステージ・ステージ済み未コミットの変更もないこと。
+
+> **設計判断: Draft PR を許容する**
+>
+> 本スキルは Draft PR も対象に含める。実装上、Coordinator は `gh pr view --json state` の結果のみを検証し、**`isDraft` フィールドは参照しない**。理由は以下の通り:
+>
+> - Draft でもコードレビュー自体は可能であり、「Draft 段階でレビューサイクルを回して完成度を上げる」ユースケースを明示的にサポートしたい。
+> - 現行の `gh` CLI および GitHub GraphQL API では、`state` は `OPEN` / `CLOSED` / `MERGED` の 3 値のみで Draft PR は `OPEN` として返される。そのため追加の `isDraft` 判定は不要。
+> - 仮に将来の `gh` CLI / GitHub API 挙動変更で state が細分化された場合も、「Draft を許容する」という本仕様の意思決定は変わらず、検証ロジックの調整のみで対応する。
+
+> **Note（中断後の復旧）:**
+>
+> - Implementer の push 失敗等でサイクルが中断された場合、ローカルに未 push コミットが残る。次回 `/review-fix` 実行前に手動で `git push`（または `git reset --hard origin/<branch>` で破棄）して Preflight 条件を満たすこと。自動復旧は行わない。
+> - 中断時に生成済みの `review_{n}_*.md` / `task_{n}.md` は削除しない（履歴として残す）。次回 `/review-fix` 実行は**新しいタイムスタンプディレクトリで Round 1 から再開**する（過去のタイムスタンプディレクトリは参照しない）。
+> - 中断前に push 済みのローカルコミットは PR ブランチに残るため、次回 Round 1 の Reviewer は当該コミットを含む PR 状態に対してレビューを行う。
 
 ## フロー
 
@@ -41,6 +55,7 @@ PR に対して Claude による自動レビューサイクルを回し、品質
   │  - 引数検証（regex `^[1-9][0-9]*$`）             │
   │  - 前提条件確認（PR 参照可否 + ローカル clean）  │
   │  - タイムスタンプディレクトリ作成                │
+  │    ※ ディレクトリ作成は他検証が全 PASS 後のみ   │
   └───────────┬──────────────────────────────────────┘
               │
               ▼
@@ -143,8 +158,37 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 
 ### Coordinator（メインの Claude または人間）
 
-- 引数の検証（PR 番号が正規表現 `^[1-9][0-9]*$` にマッチすること）と前提条件の確認を行う。前提条件確認の手順: (1) `gh pr view <PR番号>` で PR が参照可能であること、(2) `gh pr view <PR番号> --json isCrossRepository -q .isCrossRepository` が `false`（origin-based PR）であること — `true` の場合は「fork PR は現状サポート外」のエラーで即中断、(3) `gh pr view <PR番号> --json state -q .state` が `OPEN` であること — `CLOSED` / `MERGED` の場合は「PR state が <state> のためレビュー不可」のエラーで即中断（`gh pr view --json state` は `OPEN` / `CLOSED` / `MERGED` のみを返すため、Draft PR は `OPEN` として扱われ暗黙に許容される）、(4) `gh pr view <PR番号> --json headRefName -q .headRefName` で PR ブランチ名 `<branch>` を取得、(5) `git symbolic-ref --short HEAD` の出力が `<branch>` と一致すること — `git symbolic-ref --short HEAD` が非 0 終了した場合は「HEAD が detached 状態のため `<branch>` に `git checkout` してから再実行」のエラーで即中断、正常終了かつ不一致の場合は「現在 <actual> にチェックアウト中。`<branch>` に切り替えてから再実行」のエラーで即中断、(6) `git fetch origin <branch>` で remote-tracking ref を最新化、(7) `git rev-list "origin/<branch>..HEAD"` と `git status --porcelain` の出力がいずれも空であること、を順に検証する。`@{u}` は参照しない（upstream 未設定時の破綻回避）。`rev-list` の前に `git fetch` を必ず実行する（ローカルの remote-tracking ref が古いままだと誤判定するため）。ブランチ一致検証を必須とするのは、HEAD が偶然 `origin/<branch>` と同一コミットを指す別ブランチ（例: main が PR ブランチ先頭と同位置）にある場合に rev-list 単独では偽 PASS するため、および Implementer の `git push origin HEAD:<branch>` で別ブランチのコミットが PR ブランチに上書きされる実被害を防ぐため。
-- タイムスタンプディレクトリ `.claude/reviews/<PR番号>/<YYYYMMDD_HHMMSS>/` を作成する（サイクル開始時に 1 回のみ）。
+**Preflight 検証（前提条件セクションの条件を検証する正本手順。サイクル開始時に 1 回のみ実行）**
+
+以下の (a)〜(d) を**記載の順序**で実行する。いずれかのステップで失敗したら、**その時点で即サイクルを中断する**（後続ステップは実行しない。タイムスタンプディレクトリ作成は全 PASS 後にのみ行う）。
+
+- **(a) 引数検証**
+    - PR 番号が正規表現 `^[1-9][0-9]*$` にマッチすること（マッチしない場合は「引数が不正」のエラーで即中断）。
+- **(b) PR 情報取得 + 参照可否・種別・state 検証**
+    - `gh pr view <PR番号> --json isCrossRepository,state,headRefName` を実行し、`isCrossRepository` / `state` / PR ブランチ名 `<branch>` をまとめて取得する（※ 可読性のため本節以降では論理的に 3 フィールドをステップ分割して説明するが、実装上は上記のように 1 コールに集約してよい）。
+    - `isCrossRepository` が `true` の場合は「fork PR は現状サポート外」のエラーで即中断する。
+    - `state` が `OPEN` 以外（`CLOSED` / `MERGED`）の場合は「PR state が <state> のためレビュー不可。再オープン後に再実行」のエラーで即中断する。
+- **(c) ローカル clean 検証**
+    - (c-1) `git symbolic-ref --short HEAD` の出力が (b) で取得した `<branch>` と一致すること。
+        - 非 0 終了（detached HEAD）の場合は「HEAD が detached 状態のため `<branch>` に `git checkout` してから再実行」のエラーで即中断。
+        - 正常終了かつ `<branch>` と不一致の場合は「現在 <actual> にチェックアウト中。`<branch>` に切り替えてから再実行」のエラーで即中断。
+        - **このチェックを必須とする理由:** HEAD が偶然 `origin/<branch>` と同一コミットを指す別ブランチ（例: main が PR ブランチ先頭と同位置）にある場合、rev-list 単独では偽 PASS する。また Implementer の `git push origin HEAD:<branch>` で別ブランチのコミットが PR ブランチに上書きされる実被害を防ぐ。
+    - (c-2) `git fetch origin <branch>` で remote-tracking ref を最新化する。
+        - ※ `git fetch origin <branch>` は local の `refs/remotes/origin/<branch>` を更新する**副作用のあるコマンド**である（その他の local branch 状態には影響しない）。「Preflight は参照のみ」と誤解しないこと。
+        - この fetch が無いと、別環境からの push 後に `origin/<branch>` が古いまま残り、後続の `rev-list` が「未 push コミットあり」と誤判定して Preflight が不当に abort する。
+    - (c-3) 以下の**両方**の出力が空であること:
+        - `git rev-list "origin/<branch>..HEAD"`（未 push コミットなし）。`@{u}`（upstream）は参照しない — Implementer が `git push origin HEAD:<branch>` を使うため upstream が未設定でも正常動作させるため。
+        - `git status --porcelain`（未ステージ・ステージ済み未コミット変更なし）。
+- **(d) タイムスタンプディレクトリ作成（上記 (a)〜(c) が全て PASS した後にのみ実行）**
+    - `.claude/reviews/<PR番号>/<YYYYMMDD_HHMMSS>/` を作成する。
+    - **(a)〜(c) の前に作成しない理由:** fork PR 検出 (b) や detached HEAD 検出 (c-1) で中断した場合に無駄なディレクトリが残らないよう、全検証 PASS を作成の必要条件とする。
+
+> **外部コマンド自体の失敗時ハンドリング:**
+>
+> Preflight 内で実行する `gh pr view` / `git fetch` / `git symbolic-ref` / `git rev-list` / `git status` などの外部コマンドが **exit code 非 0 で終了した場合**（ネットワーク障害、認証エラー、remote 側ブランチ削除済み、gh トークン失効など「結果が得られないケース」）は、**コマンド名と stderr を含むエラーメッセージを出力して即サイクルを中断する**。リトライは行わない。これは「結果が `true`」「結果が `OPEN` 以外」といった**正常応答に基づく判定**とは別枠の扱いであり、仕様として明示的に区別する。
+
+**その他の責務**
+
 - Reviewer サブエージェントを並列起動し、PR 番号・出力先絶対パス・フォーマット指示を渡す（diff テキスト自体は Coordinator が渡さない）。
 - 全 Reviewer の `review_{n}_*.md` を読み込み、指摘を重複排除・統合する。同一の論理的問題に対して複数 Reviewer が異なる severity を付けた場合は、高い方を採用する。「同一の論理的問題」の判断基準: 同一のルートコーズに起因する指摘、または同一ファイル・同一関数に対する同種の懸念（例: 同じ関数のエラーハンドリング不足を別 Reviewer が別表現で指摘した場合）は同一とみなす。逆に、同じコード領域でも異なる種類の問題（例: null チェック欠如とエラーメッセージ不足）は別の指摘として扱う。
 - Verdict を統合する（最も厳しいものを採用: Request Changes > Comment > Approve）。
@@ -159,7 +203,7 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 - 指摘の背景や詳細なコンテキストが必要な場合は `review_{n}_*.md` および設計ドキュメントを補助的に参照してよいが、`review_{n}_*.md` 内の指摘を独自に作業項目として扱ってはならない。
 - PR ブランチに追加コミットし、リモートに push する（次ラウンドの Reviewer が `/review` で最新状態を参照できるようにするため、push は必須）。
 - **push 実行前に、`git symbolic-ref --short HEAD` で現在のブランチが対象 PR ブランチ（`gh pr view <PR番号> --json headRefName -q .headRefName` で取得）と一致することを必ず確認する。** 不一致の場合は push せず、エラー内容を Coordinator に報告してサイクルを中断する（別ブランチのコミットが `git push origin HEAD:<PR ブランチ名>` で PR ブランチに上書きされる実被害を防ぐため）。
-- push コマンドは `git push origin HEAD:<PR ブランチ名>`（`gh pr view <PR番号> --json headRefName` で取得）を使用する。`push.default` 設定・fork 元 PR・トラッキング設定に依存しないよう、引数なしの `git push` は使わない。なお、前述の branch-match 事前検証により HEAD は PR ブランチ上にあることが保証されているため、`git push origin HEAD` と本形式は等価だが、明示的な canonical form として `HEAD:<PR ブランチ名>` に統一する。
+- push コマンドは `git push origin HEAD:<PR ブランチ名>`（`gh pr view <PR番号> --json headRefName` で取得）を使用する。`push.default` 設定・fork 元 PR・トラッキング設定に依存しないよう、引数なしの `git push` は使わない。事前検証で HEAD は PR ブランチ上にあることが保証されているが、別ブランチ上書き事故を二重に防ぐ防御的プログラミングとして明示形式 `HEAD:<PR ブランチ名>` に統一する。
 - push が非 fast-forward・認証エラーなどで失敗した場合、Implementer はエラー内容を Coordinator に報告してサイクルを中断する。**force push（`git push -f`, `--force-with-lease` など）は行わない。** 強制更新が必要かどうかの判断は人間に委ねる。
 
 ## ロールの実行モデル
@@ -177,6 +221,8 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 > **Note:** Reviewer を複数名起動する際は、Task ツールの呼び出しを **1 メッセージ内に複数含めて並列起動** すること。順次起動するとレイテンシが増大する。
 
 > **部分的失敗時の振る舞い:** 並列起動した Reviewer の一部がタイムアウト・エラーで失敗した場合、成功した Reviewer のレビュー結果のみで続行する（最低 1 名成功で有効とする）。全員が失敗した場合はリトライを **1 回のみ** 行う。リトライ時は全 K 名を再実行する（失敗した Reviewer のみの再実行ではない）。リトライでも全員が失敗した場合はサイクルを中断して人間に判断を委ねる。
+>
+> **全 K 名が失敗した際のエラーメッセージ:** リトライでも全員失敗した場合、Coordinator は中断時のメッセージに「実行環境に組み込みスキル `/review` がインストールされているか確認してください」という文言を含めること。Skill API レベルで未インストールを事前検知する手段が存在しないため、本スキルは「Reviewer 全員失敗」という事後的な症状から未インストールを示唆する方針を取る（事前検知の仕組みは追加しない）。
 
 ## Severity レベルの定義
 
@@ -260,6 +306,15 @@ PR に対して Claude による自動レビューサイクルを回し、品質
 
 Approve が出ても Coordinator が残指摘に対応すべきと判断した場合はサイクルを継続する。この場合も Coordinator は `task_{n}.md` を作成し、Accept 項目があれば Implementer を経由する通常フローと同じ手順を踏む（フロー図の Approve/No は Request Changes / Comment の継続パスと同じ合流点に合流する）。
 
+> **Note（Implementer スキップ時の次ラウンド挙動）:**
+>
+> Coordinator が全指摘を Reject して Accept ゼロでスキップした場合、Implementer による commit + push が発生しないため、**PR 内容は前ラウンドから変化しない**。結果として、次ラウンドの Reviewer（前ラウンドの情報を持たない）も同様の指摘を返す可能性が高い。同一指摘が 2 ラウンド連続で全 Reject された場合、Coordinator は以下のいずれかを選択することを検討すべき:
+>
+> - 当該指摘を残課題として残したままサイクルを終了する（記録を残して人間に判断を委ねる）。
+> - 人間にエスカレーションして対応方針を決定する。
+>
+> 単純に 10 ラウンド上限まで繰り返すと、同じ指摘で無駄にサイクルを消費することになる。
+
 ### Verdict の種類と判断基準
 
 | Verdict | 意味 | サイクルへの影響 |
@@ -296,9 +351,15 @@ Reviewer は以下の規則に従って Verdict を決定すること:
 
 レビューが 10 ラウンドに達した場合は無限ループ防止のためサイクルを強制終了し、**人間が介入して判断する**。残課題を Issue 化するなど、手動で対応方針を決定すること。
 
+> **アーティファクトの保管方針:**
+>
+> 10 ラウンドに到達してサイクルを強制終了した場合も、生成済みのアーティファクト（`review_10_*.md`, `task_10.md` を含む全 `review_{n}_*.md` / `task_{n}.md`）は**削除しない**（履歴として保持する）。次回 `/review-fix` 実行は**新しいタイムスタンプディレクトリで Round 1 から再開**する（過去のタイムスタンプディレクトリは参照しない）。過去の履歴が不要になった場合はユーザーが手動で削除してよい。
+
 ## 使い方
 
 各ロールを起動する際に、以下のコンテキストを渡す。
+
+> **`<REVIEW_DIR>` の定義:** 本ドキュメントで使用する `<REVIEW_DIR>` は、Coordinator が Preflight で作成したタイムスタンプディレクトリの**絶対パス** `.claude/reviews/<PR番号>/<YYYYMMDD_HHMMSS>/` を指す。例えば PR #42 を 2026-04-23 13:48:43 に実行した場合、`<REVIEW_DIR>` = `<リポジトリ絶対パス>/.claude/reviews/42/20260423_134843/` となる。以降の「出力先絶対パス」指定ではこのプレースホルダを使う。
 
 ### Reviewer への入力
 
@@ -311,13 +372,27 @@ Reviewer は以下の規則に従って Verdict を決定すること:
 
 Reviewer サブエージェントは以下の手順で動く:
 
-1. `Skill(skill="review", args="<PR番号>")` を明示的に呼び出して PR をレビューする（diff 取得・解析はスキル内部に委ねる）。**自然言語で `/review <PR番号>` と書くだけではスキルは起動しない** ため、Coordinator が渡すプロンプトには必ず Skill ツール呼び出しの形を指示すること。
-2. `/review` の出力を上記テンプレートに整形する（Summary / Findings（severity別） / Verdict）。この際、`/review` の severity 分類を本ドキュメントの「Severity レベルの定義」表に従って再分類する（`/review` 固有の分類は参考情報に留める）。
+1. `Skill(skill="review", args="<PR番号>")` を明示的に呼び出して PR をレビューする（diff 取得・解析はスキル内部に委ねる）。**Skill ツール呼び出しの形式で指示する**こと — 詳細は「各ロールの責務 → Reviewer」セクションの no-op 注意書きを参照。
+2. `/review` の出力を上記テンプレートに整形する（Summary / Findings（severity別） / Verdict）。この際、severity は本ドキュメントの「Severity レベルの定義」表に従って再分類する（詳細は「各ロールの責務 → Reviewer」セクション参照）。
 3. 指定された絶対パスに書き出す。
 
-> **設計意図:** Reviewer に前ラウンドの情報を渡さないのは、アンカリングバイアスを防ぐため。前ラウンドの指摘に引きずられて「修正の検証」に偏り、新たな視点での問題発見が弱くなることを避ける。前ラウンドの修正検証は Coordinator が自身で行う。
+> **設計意図 (1) — Reviewer に前ラウンド情報を渡さない理由:**
+>
+> アンカリングバイアスを防ぐため。前ラウンドの指摘に引きずられて「修正の検証」に偏り、新たな視点での問題発見が弱くなることを避ける。前ラウンドの修正検証は Coordinator が自身で行う。
 
-> **設計意図:** diff テキストを Coordinator から渡さず Reviewer が `/review` 経由で取得するのは、(1) Coordinator 経由で diff が改変・truncate されるリスクを排除するため、(2) レビューロジックの単一ソース化（`/review` スキルの改善が自動で伝播）、(3) Coordinator が diff ファイルを一度作ってから Reviewer が `cat` 等で何度も参照する構造を避けるため（この構造はファイル作成 + 複数 read の権限プロンプトを生む）。ただし K 名の Reviewer がそれぞれ `gh pr *` を呼ぶため、実運用では `gh pr view` / `gh pr diff` を常時許可設定（allow リスト）に含めることを推奨する。
+> **設計意図 (2) — diff 取得経路として「各 Reviewer が `/review` 経由で自前取得」を採用する理由:**
+>
+> **採用した方式:** K 名の Reviewer がそれぞれ `/review` を呼び、スキル内部で `gh pr view` / `gh pr diff` を実行して diff を取得する。
+>
+> **検討した代替案:** Coordinator が 1 度だけ `gh pr diff` を実行してファイルに保存し、K 名の Reviewer に当該ファイルパスを渡して参照させる方式。
+>
+> **トレードオフ比較:**
+>
+> - **代替案のデメリット:** (a) diff をファイル経由で受け渡すと、読み込み時の truncate・文字エンコーディング差異で改変リスクが生じる。(b) Coordinator が diff ファイルを作り、Reviewer が `cat`/`Read` で何度も参照する構造になり、ファイル作成 + 複数 read の**権限プロンプトが増える**。(c) `/review` スキルが内部で行う diff 取得・整形ロジックを Coordinator 側で再実装する形になり、`/review` の改善が自動伝播しなくなる（スキル再発明）。
+> - **採用方式のデメリット:** K 名 × 1 ラウンドあたりの `gh pr view` / `gh pr diff` API 呼び出し回数が K 倍になる（`/review` スキルが内部で複数回呼ぶ場合さらに増える）。large repo / long diff ではレスポンスサイズも大きくなる。
+> - **意思決定:** `gh pr view` / `gh pr diff` を allow リスト（常時許可設定）に含めることで権限プロンプトを抑制し、結果として K 倍の API 呼び出しコストを許容する。レビューロジックの単一ソース性と truncate リスク排除を優先。
+>
+> **運用上の調整余地:** 実運用で API レート制限やコストが問題になる場合は、Reviewer の並列数 K をデフォルトの 2 から 1 に下げる選択肢がある（Reviewer 責務セクションの「Coordinator の判断で増減可能」参照）。単一視点のみになるため指摘取りこぼしリスクとトレードオフ。
 
 > **Note:** 複数 Reviewer には同一の入力（PR 番号）を渡す。各 Reviewer は互いの存在を知らない状態で独立にレビューを行う。
 
